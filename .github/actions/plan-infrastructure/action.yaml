@@ -1,0 +1,44 @@
+# NOTE: requires id-token: write permissions!
+
+name: 'Plan Infrastructure (OpenTofu)'
+description: 'Plans infrastructure changes using OpenTofu'
+inputs:
+  aws_account_id:
+    description: 'AWS Account ID for the deployment'
+    required: true
+  aws_region:
+    description: 'AWS Region for the deployment'
+    required: true
+  env:
+    description: 'Environment name (e.g., nonprod, prod)'
+    required: true
+  infrastructure_directory:
+    description: 'Directory containing infrastructure code'
+    required: false
+    default: 'infra'
+  iam_role_name:
+    description: 'IAM role name to assume'
+    required: false
+    default: 'tofu-rw'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v5
+      with:
+        role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/${{ inputs.iam_role_name }}
+        role-session-name: GitHub_to_AWS_via_FederatedOIDC
+        aws-region: ${{ inputs.aws_region }}
+
+    - name: Setup OpenTofu CLI
+      uses: opentofu/setup-opentofu@v1
+      with:
+        tofu_wrapper: false
+
+    - name: OpenTofu plan
+      shell: bash
+      run: |
+        cd ${{ inputs.infrastructure_directory }}
+        tofu init -var="env=${{ inputs.environment }}" -var="region=${{ inputs.aws_region }}"
+        tofu plan -var="env=${{ inputs.environment }}" -var="region=${{ inputs.aws_region }}"
