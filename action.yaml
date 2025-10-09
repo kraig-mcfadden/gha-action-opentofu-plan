@@ -11,7 +11,7 @@ inputs:
     description: 'AWS Region for the deployment'
     type: string
     required: true
-  env:
+  env_name:
     description: 'Environment name (e.g., nonprod, prod)'
     type: string
     required: true
@@ -45,5 +45,5 @@ runs:
       shell: bash
       run: |
         cd ${{ inputs.infrastructure_directory }}
-        tofu init -var="env=${{ inputs.environment }}" -var="region=${{ inputs.aws_region }}"
-        tofu plan -var="env=${{ inputs.environment }}" -var="region=${{ inputs.aws_region }}"
+        tofu init -var="env=${{ inputs.env_name }}" -var="region=${{ inputs.aws_region }}"
+        tofu plan -var="env=${{ inputs.env_name }}" -var="region=${{ inputs.aws_region }}"
