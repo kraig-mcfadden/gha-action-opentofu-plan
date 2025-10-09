@@ -5,19 +5,24 @@ description: 'Plans infrastructure changes using OpenTofu'
 inputs:
   aws_account_id:
     description: 'AWS Account ID for the deployment'
+    type: string
     required: true
   aws_region:
     description: 'AWS Region for the deployment'
+    type: string
     required: true
   env:
     description: 'Environment name (e.g., nonprod, prod)'
+    type: string
     required: true
   infrastructure_directory:
     description: 'Directory containing infrastructure code'
+    type: string
     required: false
     default: 'infra'
   iam_role_name:
     description: 'IAM role name to assume'
+    type: string
     required: false
     default: 'tofu-rw'
 
