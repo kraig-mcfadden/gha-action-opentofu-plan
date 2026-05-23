@@ -25,6 +25,16 @@ inputs:
     type: string
     required: false
     default: 'tofu-rw'
+  use_tfvars:
+    description: 'Whether to pass a .tfvars file to OpenTofu'
+    type: string
+    required: false
+    default: 'false'
+  tfvars_file:
+    description: 'Path to .tfvars file, relative to infrastructure_directory. Defaults to <env_name>.tfvars when use_tfvars is true.'
+    type: string
+    required: false
+    default: ''
 
 runs:
   using: 'composite'
@@ -45,5 +55,13 @@ runs:
       shell: bash
       run: |
         cd ${{ inputs.infrastructure_directory }}
-        tofu init -var="env=${{ inputs.env_name }}" -var="region=${{ inputs.aws_region }}"
-        tofu plan -var="env=${{ inputs.env_name }}" -var="region=${{ inputs.aws_region }}"
+        VAR_FILE_ARG=""
+        if [ "${{ inputs.use_tfvars }}" = "true" ]; then
+          TFVARS_FILE="${{ inputs.tfvars_file }}"
+          if [ -z "$TFVARS_FILE" ]; then
+            TFVARS_FILE="${{ inputs.env_name }}.tfvars"
+          fi
+          VAR_FILE_ARG="-var-file=$TFVARS_FILE"
+        fi
+        tofu init -var="env=${{ inputs.env_name }}" -var="region=${{ inputs.aws_region }}" $VAR_FILE_ARG
+        tofu plan -var="env=${{ inputs.env_name }}" -var="region=${{ inputs.aws_region }}" $VAR_FILE_ARG
