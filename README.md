@@ -35,11 +35,16 @@ permissions:
 
 ## PR comments
 
-On `pull_request` events (and only those), the action captures `tofu plan -no-color` and posts it as a comment on the originating PR. The comment uses a sticky marker — `<!-- tofu-plan:{env_name}:{infrastructure_directory} -->` — so subsequent runs against the same PR + env + directory **update the existing comment in place** rather than stacking new ones. Different `env_name` or `infrastructure_directory` values get their own independent comments, so you can plan multiple envs from the same PR without them clobbering each other.
+The action captures `tofu plan -no-color` and posts it as a comment on the related PR. It works with both event types:
+
+- **`pull_request` (and `pull_request_target`)** — comments directly on the triggering PR.
+- **`push` / `workflow_dispatch`** — looks up an open PR whose head branch matches the current ref via the GitHub API and comments there. If no open PR exists yet (e.g. you push a branch before opening one), the step skips silently.
+
+The comment uses a sticky marker — `<!-- tofu-plan:{env_name}:{infrastructure_directory} -->` — so subsequent runs against the same PR + env + directory **update the existing comment in place** rather than stacking new ones. Different `env_name` or `infrastructure_directory` values get their own independent comments, so you can plan multiple envs from the same PR without them clobbering each other.
 
 Plan output is truncated at ~60,000 characters with a note pointing reviewers to the workflow logs for the full diff. A failing plan still fails the workflow (the step's exit code is the plan's exit code) — the comment is posted either way so reviewers can see what went wrong.
 
-For non-`pull_request` events (e.g. direct pushes to `main`), the comment step is skipped and the action behaves identically to the pre-comment version.
+When there's no associated PR (e.g. push to `main`, manual dispatch outside a branch context), the comment step is a silent no-op.
 
 ## Example usage
 
