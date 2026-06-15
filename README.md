@@ -1,6 +1,67 @@
 # gha-action-opentofu-plan
-Runs an OpenTofu plan. Assumes you're using AWS.
 
-Inputs to the apply are not configurable at the moment. They may be in a future release.
+Runs an OpenTofu plan against an AWS account, optionally posting the result as a sticky pull-request comment.
 
-Provides default names for the infrastructure folder as well as the AWS role to assume to allow creating and deleting resources. Those can be overridden.
+## Permissions
+
+The calling job must grant:
+
+- `id-token: write` — required for OIDC federation to the target AWS role.
+- `contents: read` — required to check out the calling repo (usually granted by default).
+- `pull-requests: write` — required **only** if you want PR comments. Omit if you set `post_pr_comment: "false"` or never run the action from a `pull_request` event.
+
+Example permissions block:
+
+```yaml
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+```
+
+## Inputs
+
+| Name                       | Required | Default       | Description |
+|----------------------------|----------|---------------|-------------|
+| `aws_account_id`           | yes      | —             | AWS account to plan against. |
+| `aws_region`               | yes      | —             | AWS region passed to OpenTofu as `region`. |
+| `env_name`                 | yes      | —             | Environment name passed to OpenTofu as `env` (e.g. `nonprod`, `prod`). |
+| `infrastructure_directory` | no       | `infra`       | Directory containing the OpenTofu configuration. |
+| `iam_role_name`            | no       | `tofu-rw`     | IAM role name to assume in the target account. |
+| `use_tfvars`               | no       | `false`       | When `"true"`, pass a `-var-file` to OpenTofu. |
+| `tfvars_file`              | no       | `""`          | Path to a `.tfvars` file relative to `infrastructure_directory`. Defaults to `<env_name>.tfvars` when `use_tfvars` is `"true"`. |
+| `post_pr_comment`          | no       | `"true"`      | Post plan output as a PR comment on `pull_request` events. Set to `"false"` to disable. |
+| `github_token`             | no       | `github.token`| Token used to post the PR comment. |
+
+## PR comments
+
+On `pull_request` events (and only those), the action captures `tofu plan -no-color` and posts it as a comment on the originating PR. The comment uses a sticky marker — `<!-- tofu-plan:{env_name}:{infrastructure_directory} -->` — so subsequent runs against the same PR + env + directory **update the existing comment in place** rather than stacking new ones. Different `env_name` or `infrastructure_directory` values get their own independent comments, so you can plan multiple envs from the same PR without them clobbering each other.
+
+Plan output is truncated at ~60,000 characters with a note pointing reviewers to the workflow logs for the full diff. A failing plan still fails the workflow (the step's exit code is the plan's exit code) — the comment is posted either way so reviewers can see what went wrong.
+
+For non-`pull_request` events (e.g. direct pushes to `main`), the comment step is skipped and the action behaves identically to the pre-comment version.
+
+## Example usage
+
+```yaml
+name: Plan
+on:
+  pull_request:
+    paths:
+      - 'infra/**'
+
+jobs:
+  plan-nonprod:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: kraig-mcfadden/gha-action-opentofu-plan@v1
+        with:
+          aws_account_id: '123456789012'
+          aws_region: us-east-1
+          env_name: nonprod
+```
