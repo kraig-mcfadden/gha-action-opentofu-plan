@@ -1,7 +1,10 @@
-# NOTE: requires id-token: write permissions!
+# NOTE: requires `id-token: write` on the calling job.
+# To post plan output as a PR comment, also grant `pull-requests: write`.
+# The comment-posting step is a no-op when the workflow isn't running for a
+# pull request (e.g. direct pushes to main).
 
 name: 'Plan Infrastructure (OpenTofu)'
-description: 'Plans infrastructure changes using OpenTofu'
+description: 'Plans infrastructure changes using OpenTofu, optionally posting the result as a PR comment.'
 inputs:
   aws_account_id:
     description: 'AWS Account ID for the deployment'
@@ -35,6 +38,16 @@ inputs:
     type: string
     required: false
     default: ''
+  post_pr_comment:
+    description: 'When "true" (default), post plan output as a PR comment on pull_request events. Set to "false" to disable.'
+    type: string
+    required: false
+    default: 'true'
+  github_token:
+    description: 'Token used to post the PR comment. Defaults to the workflow GITHUB_TOKEN when omitted.'
+    type: string
+    required: false
+    default: ''
 
 runs:
   using: 'composite'
@@ -52,16 +65,135 @@ runs:
         tofu_wrapper: false
 
     - name: OpenTofu plan
+      id: plan
       shell: bash
+      env:
+        ENV_NAME: ${{ inputs.env_name }}
+        AWS_REGION: ${{ inputs.aws_region }}
+        INFRA_DIR: ${{ inputs.infrastructure_directory }}
+        USE_TFVARS: ${{ inputs.use_tfvars }}
+        TFVARS_FILE: ${{ inputs.tfvars_file }}
       run: |
-        cd ${{ inputs.infrastructure_directory }}
+        set -euo pipefail
+        cd "$INFRA_DIR"
+
         VAR_FILE_ARG=""
-        if [ "${{ inputs.use_tfvars }}" = "true" ]; then
-          TFVARS_FILE="${{ inputs.tfvars_file }}"
+        if [ "$USE_TFVARS" = "true" ]; then
           if [ -z "$TFVARS_FILE" ]; then
-            TFVARS_FILE="${{ inputs.env_name }}.tfvars"
+            TFVARS_FILE="${ENV_NAME}.tfvars"
           fi
           VAR_FILE_ARG="-var-file=$TFVARS_FILE"
         fi
-        tofu init -var="env=${{ inputs.env_name }}" -var="region=${{ inputs.aws_region }}" $VAR_FILE_ARG
-        tofu plan -var="env=${{ inputs.env_name }}" -var="region=${{ inputs.aws_region }}" $VAR_FILE_ARG
+
+        tofu init \
+          -var="env=$ENV_NAME" \
+          -var="region=$AWS_REGION" \
+          $VAR_FILE_ARG
+
+        # Capture human-readable plan output to a file so the next step can
+        # surface it as a PR comment. -no-color keeps ANSI sequences out of
+        # the markdown block.
+        PLAN_OUTPUT_PATH="${RUNNER_TEMP:-/tmp}/tofu-plan-${ENV_NAME}.txt"
+        set +e
+        tofu plan -no-color \
+          -var="env=$ENV_NAME" \
+          -var="region=$AWS_REGION" \
+          $VAR_FILE_ARG \
+          | tee "$PLAN_OUTPUT_PATH"
+        PLAN_EXIT=${PIPESTATUS[0]}
+        set -e
+
+        echo "plan_output_path=$PLAN_OUTPUT_PATH" >> "$GITHUB_OUTPUT"
+        echo "plan_exit_code=$PLAN_EXIT" >> "$GITHUB_OUTPUT"
+
+        # Surface the plan exit code as the step's exit code so failures still
+        # block the workflow even though we tee'd the output.
+        exit $PLAN_EXIT
+
+    - name: Post plan to PR
+      if: ${{ always() && inputs.post_pr_comment == 'true' }}
+      uses: actions/github-script@v7
+      env:
+        PLAN_OUTPUT_PATH: ${{ steps.plan.outputs.plan_output_path }}
+        PLAN_EXIT_CODE: ${{ steps.plan.outputs.plan_exit_code }}
+        ENV_NAME: ${{ inputs.env_name }}
+        INFRA_DIR: ${{ inputs.infrastructure_directory }}
+      with:
+        github-token: ${{ inputs.github_token || github.token }}
+        script: |
+          const fs = require('fs');
+          const { PLAN_OUTPUT_PATH, PLAN_EXIT_CODE, ENV_NAME, INFRA_DIR } = process.env;
+          const { owner, repo } = context.repo;
+
+          // Figure out which PR to comment on. Native pull_request events
+          // carry the PR number; for push / workflow_dispatch we look up an
+          // open PR whose head branch matches the current ref.
+          let issue_number;
+          if (context.eventName === 'pull_request' || context.eventName === 'pull_request_target') {
+            issue_number = context.payload.pull_request.number;
+          } else {
+            const ref = context.ref || '';
+            const branch = ref.replace(/^refs\/heads\//, '');
+            if (!branch || ref === branch) {
+              core.info(`No branch ref on ${context.eventName} event; skipping plan comment.`);
+              return;
+            }
+            const prs = await github.rest.pulls.list({
+              owner,
+              repo,
+              head: `${owner}:${branch}`,
+              state: 'open',
+              per_page: 1,
+            });
+            if (prs.data.length === 0) {
+              core.info(`No open PR found for branch ${branch}; skipping plan comment.`);
+              return;
+            }
+            issue_number = prs.data[0].number;
+          }
+
+          // The comment uses a marker so subsequent runs update in place
+          // instead of stacking duplicates on every push to the PR branch.
+          const marker = `<!-- tofu-plan:${ENV_NAME}:${INFRA_DIR} -->`;
+          const MAX_BODY = 60000; // GH allows 65536, leave headroom for the wrapper
+
+          let plan = '';
+          try {
+            plan = fs.readFileSync(PLAN_OUTPUT_PATH, 'utf8');
+          } catch (e) {
+            plan = `(could not read plan output: ${e.message})`;
+          }
+
+          let truncatedNote = '';
+          if (plan.length > MAX_BODY) {
+            truncatedNote = `\n\n⚠️ Plan truncated — full output in the workflow logs (${plan.length} chars).`;
+            plan = plan.slice(0, MAX_BODY);
+          }
+
+          const status = PLAN_EXIT_CODE === '0' ? '✅ ok' : `❌ failed (exit ${PLAN_EXIT_CODE})`;
+          const body = [
+            marker,
+            `### OpenTofu plan — \`${ENV_NAME}\` (${INFRA_DIR})`,
+            `Status: ${status}`,
+            '',
+            '```',
+            plan,
+            '```',
+            truncatedNote,
+          ].join('\n');
+
+          const existing = await github.paginate(
+            github.rest.issues.listComments,
+            { owner, repo, issue_number, per_page: 100 },
+          );
+          const prior = existing.find((c) => c.body && c.body.startsWith(marker));
+
+          if (prior) {
+            await github.rest.issues.updateComment({
+              owner, repo, comment_id: prior.id, body,
+            });
+          } else {
+            await github.rest.issues.createComment({
+              owner, repo, issue_number, body,
+            });
+          }
