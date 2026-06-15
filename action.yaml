@@ -44,7 +44,7 @@ inputs:
     required: false
     default: 'true'
   github_token:
-    description: 'GITHUB_TOKEN (or PAT) used to post the PR comment. Defaults to ${{ github.token }} when omitted.'
+    description: 'Token used to post the PR comment. Defaults to the workflow GITHUB_TOKEN when omitted.'
     type: string
     required: false
     default: ''
